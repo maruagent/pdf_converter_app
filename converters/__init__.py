@@ -1,2 +1,3 @@
 from .excel_converter import ExcelConverter
 from .word_converter import WordConverter
+from .powerpoint_converter import PowerPointConverter
