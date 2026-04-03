@@ -35,19 +35,19 @@ SUPPORTED_EXTS = EXCEL_EXTS | WORD_EXTS | PPT_EXTS
 def _process_group(converter_cls, files, output_dir, success_info, error_files):
     """
     同種ファイルを1つのOfficeアプリインスタンスで一括変換する。
+    各スレッドから呼ばれる想定で、COM初期化も内部で行う。
     converter_cls: ExcelConverter / WordConverter / PowerPointConverter
     """
     if not files:
         return
 
+    import pythoncom
+    pythoncom.CoInitialize()
     converter = None
     try:
         converter = converter_cls()
         for file_path in files:
             basename = os.path.basename(file_path)
-            pdf_name = os.path.splitext(basename)[0] + ".pdf"
-            pdf_path = os.path.join(output_dir, pdf_name)
-
             print(f"PDFに変換中: {basename}")
             try:
                 result_path = converter.convert(file_path, output_dir=output_dir)
@@ -61,6 +61,7 @@ def _process_group(converter_cls, files, output_dir, success_info, error_files):
     finally:
         if converter:
             converter.close()
+        pythoncom.CoUninitialize()
 
 
 def main():
@@ -91,7 +92,7 @@ def main():
 
     # 重いモジュールのインポート（一度だけ）
     try:
-        import pythoncom
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         from converters import ExcelConverter, WordConverter, PowerPointConverter
     except Exception as e:
         print(f"モジュールの読み込みに失敗しました: {e}")
@@ -199,14 +200,24 @@ def main():
     success_info = []
     error_files  = []
 
-    # COM の初期化は一度だけ
-    pythoncom.CoInitialize()
-    try:
-        _process_group(ExcelConverter,      excel_files, output_dir, success_info, error_files)
-        _process_group(WordConverter,       word_files,  output_dir, success_info, error_files)
-        _process_group(PowerPointConverter, ppt_files,   output_dir, success_info, error_files)
-    finally:
-        pythoncom.CoUninitialize()
+    # Excel / Word / PowerPoint を並列で変換（各スレッドが独立して COM を初期化）
+    groups = [
+        (ExcelConverter,      excel_files),
+        (WordConverter,       word_files),
+        (PowerPointConverter, ppt_files),
+    ]
+    active_groups = [(cls, files) for cls, files in groups if files]
+
+    with ThreadPoolExecutor(max_workers=len(active_groups) or 1) as executor:
+        futures = {
+            executor.submit(_process_group, cls, files, output_dir, success_info, error_files): cls.__name__
+            for cls, files in active_groups
+        }
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception as e:
+                print(f"変換スレッドでエラーが発生しました: {e}")
 
     # 結果表示
     if success_info:

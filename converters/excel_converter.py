@@ -16,6 +16,8 @@ class ExcelConverter(BaseConverter):
         self.excel.Visible = False
         self.excel.DisplayAlerts = False
         self.excel.Interactive = False
+        self.excel.ScreenUpdating = False
+        self.excel.EnableEvents = False
 
     def convert(self, file_path, output_dir=None):
         wb = None

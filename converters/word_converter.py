@@ -15,6 +15,8 @@ class WordConverter(BaseConverter):
         self.word = win32com.client.DispatchEx("Word.Application")
         self.word.Visible = False
         self.word.DisplayAlerts = 0  # wdAlertsNone
+        self.word.ScreenUpdating = False
+        self.word.Options.UpdateLinksAtOpen = False
 
     def convert(self, file_path, output_dir=None):
         doc = None
