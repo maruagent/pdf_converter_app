@@ -1,16 +1,22 @@
+# -*- coding: utf-8 -*-
 import sys
 import os
 import io
+import threading
+from datetime import datetime
+import tkinter as tk
+from tkinter import simpledialog, messagebox
 
-# 1. 最初にメッセージを表示
 # Windowsコンソールでの文字化けを最小限にするため、
 # インポート直後にエンコーディングを設定
 if sys.platform == "win32":
     try:
         if sys.stdout and hasattr(sys.stdout, 'buffer'):
-            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+            sys.stdout = io.TextIOWrapper(
+                sys.stdout.buffer, encoding='utf-8', errors='replace')
         if sys.stderr and hasattr(sys.stderr, 'buffer'):
-            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+            sys.stderr = io.TextIOWrapper(
+                sys.stderr.buffer, encoding='utf-8', errors='replace')
     except Exception:
         pass
 
@@ -18,21 +24,15 @@ print("分析・変換をしています。しばらくお待ちください..."
 if sys.stdout:
     sys.stdout.flush()
 
-# -*- coding: utf-8 -*-
-
-# 2. 標準ライブラリのインポート
-from datetime import datetime
-import tkinter as tk
-from tkinter import simpledialog, messagebox
-
 # 対応拡張子の定義
 EXCEL_EXTS = {".xlsx", ".xls", ".xlsm"}
-WORD_EXTS  = {".docx", ".doc"}
-PPT_EXTS   = {".pptx", ".ppt", ".pptm"}
+WORD_EXTS = {".docx", ".doc"}
+PPT_EXTS = {".pptx", ".ppt", ".pptm"}
 SUPPORTED_EXTS = EXCEL_EXTS | WORD_EXTS | PPT_EXTS
 
 
-def _process_group(converter_cls, files, output_dir, success_info, error_files):
+def _process_group(converter_cls, files, output_dir, success_info,
+                   error_files, lock):
     """
     同種ファイルを1つのOfficeアプリインスタンスで一括変換する。
     各スレッドから呼ばれる想定で、COM初期化も内部で行う。
@@ -50,14 +50,17 @@ def _process_group(converter_cls, files, output_dir, success_info, error_files):
             basename = os.path.basename(file_path)
             print(f"PDFに変換中: {basename}")
             try:
-                result_path = converter.convert(file_path, output_dir=output_dir)
-                success_info.append({
-                    'dir': output_dir,
-                    'file': os.path.basename(result_path)
-                })
+                result_path = converter.convert(
+                    file_path, output_dir=output_dir)
+                with lock:
+                    success_info.append({
+                        'dir': output_dir,
+                        'file': os.path.basename(result_path)
+                    })
             except Exception as e:
                 error_message = str(e).strip() or "不明なエラーが発生しました"
-                error_files.append(f"{basename} (エラー: {error_message})")
+                with lock:
+                    error_files.append(f"{basename} (エラー: {error_message})")
     finally:
         if converter:
             converter.close()
@@ -75,11 +78,13 @@ def main():
             GetCommandLineW = ctypes.windll.kernel32.GetCommandLineW
             GetCommandLineW.restype = wintypes.LPCWSTR
             CommandLineToArgvW = ctypes.windll.shell32.CommandLineToArgvW
-            CommandLineToArgvW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int)]
+            CommandLineToArgvW.argtypes = [
+                wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int)]
             CommandLineToArgvW.restype = ctypes.POINTER(wintypes.LPWSTR)
 
             argc = ctypes.c_int(0)
-            argv_unicode = CommandLineToArgvW(GetCommandLineW(), ctypes.byref(argc))
+            argv_unicode = CommandLineToArgvW(
+                GetCommandLineW(), ctypes.byref(argc))
             if not argv_unicode:
                 return sys.argv
 
@@ -93,7 +98,8 @@ def main():
     # 重いモジュールのインポート（一度だけ）
     try:
         from concurrent.futures import ThreadPoolExecutor, as_completed
-        from converters import ExcelConverter, WordConverter, PowerPointConverter
+        from converters import (
+            ExcelConverter, WordConverter, PowerPointConverter)
     except Exception as e:
         print(f"モジュールの読み込みに失敗しました: {e}")
         if getattr(sys, 'frozen', False):
@@ -144,10 +150,11 @@ def main():
 
     base_dir = os.path.dirname(files_to_process[0])
     date_str = datetime.now().strftime("%Y%m%d")
-    default_name = f"{date_str}_"
+    default_name = f"{date_str}_PDF"
 
     prompt_msg = "元のファイルと同じ場所に新たなフォルダを作ります。\nフォルダ名称を入力してください。"
-    user_input = simpledialog.askstring("フォルダ作成", prompt_msg, initialvalue=default_name, parent=root)
+    user_input = simpledialog.askstring(
+        "フォルダ作成", prompt_msg, initialvalue=default_name, parent=root)
 
     if user_input is None:
         print("\nキャンセルされました。")
@@ -193,12 +200,22 @@ def main():
         return
 
     # ファイルをタイプ別にグループ化
-    excel_files = [f for f in final_files if os.path.splitext(f)[1].lower() in EXCEL_EXTS]
-    word_files  = [f for f in final_files if os.path.splitext(f)[1].lower() in WORD_EXTS]
-    ppt_files   = [f for f in final_files if os.path.splitext(f)[1].lower() in PPT_EXTS]
+    excel_files = [
+        f for f in final_files
+        if os.path.splitext(f)[1].lower() in EXCEL_EXTS
+    ]
+    word_files = [
+        f for f in final_files
+        if os.path.splitext(f)[1].lower() in WORD_EXTS
+    ]
+    ppt_files = [
+        f for f in final_files
+        if os.path.splitext(f)[1].lower() in PPT_EXTS
+    ]
 
     success_info = []
-    error_files  = []
+    error_files = []
+    lock = threading.Lock()
 
     # Excel / Word / PowerPoint を並列で変換（各スレッドが独立して COM を初期化）
     groups = [
@@ -210,7 +227,9 @@ def main():
 
     with ThreadPoolExecutor(max_workers=len(active_groups) or 1) as executor:
         futures = {
-            executor.submit(_process_group, cls, files, output_dir, success_info, error_files): cls.__name__
+            executor.submit(
+                _process_group, cls, files, output_dir, success_info,
+                error_files, lock): cls.__name__
             for cls, files in active_groups
         }
         for future in as_completed(futures):

@@ -1,6 +1,5 @@
 import os
 import win32com.client
-import pythoncom
 from .base_converter import BaseConverter
 
 
