@@ -31,40 +31,77 @@ PPT_EXTS = {".pptx", ".ppt", ".pptm"}
 SUPPORTED_EXTS = EXCEL_EXTS | WORD_EXTS | PPT_EXTS
 
 
-def _process_group(converter_cls, files, output_dir, success_info,
-                   error_files, lock):
+def _convert_single_file(converter_cls, file_path, output_dir, success_info,
+                         error_files, lock):
     """
-    同種ファイルを1つのOfficeアプリインスタンスで一括変換する。
+    単一ファイルをOfficeアプリインスタンスで変換する。
     各スレッドから呼ばれる想定で、COM初期化も内部で行う。
     converter_cls: ExcelConverter / WordConverter / PowerPointConverter
     """
-    if not files:
-        return
-
     import pythoncom
     pythoncom.CoInitialize()
     converter = None
     try:
         converter = converter_cls()
-        for file_path in files:
-            basename = os.path.basename(file_path)
-            print(f"PDFに変換中: {basename}")
-            try:
-                result_path = converter.convert(
-                    file_path, output_dir=output_dir)
-                with lock:
-                    success_info.append({
-                        'dir': output_dir,
-                        'file': os.path.basename(result_path)
-                    })
-            except Exception as e:
-                error_message = str(e).strip() or "不明なエラーが発生しました"
-                with lock:
-                    error_files.append(f"{basename} (エラー: {error_message})")
+        basename = os.path.basename(file_path)
+        print(f"PDFに変換中: {basename}")
+        try:
+            result_path = converter.convert(file_path, output_dir=output_dir)
+            with lock:
+                success_info.append({
+                    'dir': output_dir,
+                    'file': os.path.basename(result_path)
+                })
+        except Exception as e:
+            error_message = str(e).strip() or "不明なエラーが発生しました"
+            with lock:
+                error_files.append(f"{basename} (エラー: {error_message})")
     finally:
         if converter:
             converter.close()
         pythoncom.CoUninitialize()
+
+
+def _process_group(converter_cls, files, output_dir, success_info,
+                   error_files, lock, max_workers=2):
+    """
+    同種ファイルを複数のOfficeアプリインスタンスで並列変換する。
+    各スレッドから呼ばれる想定で、COM初期化も内部で行う。
+    converter_cls: ExcelConverter / WordConverter / PowerPointConverter
+    max_workers: 同時実行数（ファイル数に応じて調整）
+    """
+    if not files:
+        return
+
+    # ファイル数が少なければ逐次処理、多い場合は並列処理
+    if len(files) <= 2:
+        # 少数の場合は1つのインスタンスで処理（COM起動オーバーヘッドを回避）
+        if files:
+            _convert_single_file(
+                converter_cls, files[0], output_dir, success_info,
+                error_files, lock)
+        for file_path in files[1:]:
+            _convert_single_file(
+                converter_cls, file_path, output_dir, success_info,
+                error_files, lock)
+    else:
+        # 複数のインスタンスで並列処理
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        workers = min(len(files), max_workers)
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(
+                    _convert_single_file, converter_cls, file_path,
+                    output_dir, success_info, error_files, lock): file_path
+                for file_path in files
+            }
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    file_path = futures[future]
+                    err_msg = f"{os.path.basename(file_path)} (エラー: {str(e)})"
+                    error_files.append(err_msg)
 
 
 def main():
