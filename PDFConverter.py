@@ -2,10 +2,11 @@
 import sys
 import os
 import io
+import time
 import threading
 from datetime import datetime
 import tkinter as tk
-from tkinter import simpledialog, messagebox
+from tkinter import messagebox
 
 # Windowsコンソールでの文字化けを最小限にするため、
 # インポート直後にエンコーディングを設定
@@ -31,12 +32,24 @@ PPT_EXTS = {".pptx", ".ppt", ".pptm"}
 SUPPORTED_EXTS = EXCEL_EXTS | WORD_EXTS | PPT_EXTS
 
 
+def wait_and_exit(root=None):
+    """3秒待機してから終了する共通処理"""
+    if root:
+        try:
+            root.destroy()  # Tkinterのリソースを安全に解放
+        except Exception:
+            pass
+
+    if getattr(sys, 'frozen', False) or sys.stdin.isatty():
+        print("\n3秒経過後、自動的に終了します...")
+        time.sleep(3)
+
+
 def _convert_single_file(converter_cls, file_path, output_dir, success_info,
                          error_files, lock):
     """
     単一ファイルをOfficeアプリインスタンスで変換する。
     各スレッドから呼ばれる想定で、COM初期化も内部で行う。
-    converter_cls: ExcelConverter / WordConverter / PowerPointConverter
     """
     import pythoncom
     pythoncom.CoInitialize()
@@ -66,26 +79,17 @@ def _process_group(converter_cls, files, output_dir, success_info,
                    error_files, lock, max_workers=2):
     """
     同種ファイルを複数のOfficeアプリインスタンスで並列変換する。
-    各スレッドから呼ばれる想定で、COM初期化も内部で行う。
-    converter_cls: ExcelConverter / WordConverter / PowerPointConverter
-    max_workers: 同時実行数（ファイル数に応じて調整）
     """
     if not files:
         return
 
     # ファイル数が少なければ逐次処理、多い場合は並列処理
     if len(files) <= 2:
-        # 少数の場合は1つのインスタンスで処理（COM起動オーバーヘッドを回避）
-        if files:
-            _convert_single_file(
-                converter_cls, files[0], output_dir, success_info,
-                error_files, lock)
-        for file_path in files[1:]:
+        for file_path in files:
             _convert_single_file(
                 converter_cls, file_path, output_dir, success_info,
                 error_files, lock)
     else:
-        # 複数のインスタンスで並列処理
         from concurrent.futures import ThreadPoolExecutor, as_completed
         workers = min(len(files), max_workers)
         with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -111,7 +115,6 @@ def main():
         from ctypes import wintypes
 
         def get_unicode_argv():
-            """WindowsのGetCommandLineWを使用してUnicodeの引数リストを取得する"""
             GetCommandLineW = ctypes.windll.kernel32.GetCommandLineW
             GetCommandLineW.restype = wintypes.LPCWSTR
             CommandLineToArgvW = ctypes.windll.shell32.CommandLineToArgvW
@@ -132,6 +135,15 @@ def main():
 
         sys.argv = get_unicode_argv()
 
+    # --- ドラッグアンドドロップされたファイル一覧の表示 ---
+    # Unicodeに統一した後に行うことで、ファイル名の文字化けを防ぎます
+    if len(sys.argv) > 1:
+        print("\n【ドラッグ＆ドロップされたファイル一覧】")
+        for arg in sys.argv[1:]:
+            clean_arg = arg.strip().strip('"')
+            print(f" - {os.path.basename(clean_arg)}")
+        print("-" * 50)
+
     # 重いモジュールのインポート（一度だけ）
     try:
         from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -139,15 +151,13 @@ def main():
             ExcelConverter, WordConverter, PowerPointConverter)
     except Exception as e:
         print(f"モジュールの読み込みに失敗しました: {e}")
-        if getattr(sys, 'frozen', False):
-            input("\nEnterキーを押して終了してください。")
+        wait_and_exit()
         return
 
     # 引数チェック
     if len(sys.argv) < 2:
         print("\nWord、Excel、PowerPointファイルをこの実行ファイルにドラッグアンドドロップしてください。")
-        if getattr(sys, 'frozen', False):
-            input("\nEnterキーを押して終了してください。")
+        wait_and_exit()
         return
 
     # 対応拡張子のチェックとファイル収集
@@ -170,42 +180,29 @@ def main():
 
     if unsupported_found and not files_to_process:
         print("\nエラー: Word、Excel、またはPowerPointファイルのみ対応しています。")
-        if getattr(sys, 'frozen', False) or sys.stdin.isatty():
-            input("\nEnterキーを押して終了してください。")
+        wait_and_exit()
         return
 
     if not files_to_process:
         print("\n処理対象のファイルが見つかりませんでした。")
-        if getattr(sys, 'frozen', False):
-            input("\nEnterキーを押して終了してください。")
+        wait_and_exit()
         return
 
-    # 保存先フォルダの決定（ポップアップウィンドウ）
+    # 上書き確認等のため、Tkinterを非表示で初期化
     root = tk.Tk()
     root.withdraw()
     root.attributes("-topmost", True)
 
+    # --- 保存先フォルダの決定（固定名）とコマンドプロンプトへの表示 ---
     base_dir = os.path.dirname(files_to_process[0])
     date_str = datetime.now().strftime("%Y%m%d")
-    default_name = f"{date_str}_PDFフォルダ"
-
-    prompt_msg = "元のファイルと同じ場所に新たなフォルダを作ります。\nフォルダ名称を入力してください。"
-    user_input = simpledialog.askstring(
-        "フォルダ作成", prompt_msg, initialvalue=default_name, parent=root)
-
-    if user_input is None:
-        print("\nキャンセルされました。")
-        return
-
-    try:
-        folder_name = user_input.strip()
-    except Exception:
-        folder_name = default_name
-
-    if not folder_name:
-        folder_name = default_name
-
+    folder_name = f"{date_str}_PDF"
     output_dir = os.path.join(base_dir, folder_name)
+
+    print("\n【保存先フォルダ情報】")
+    print(f"作成場所: {base_dir}")
+    print(f"フォルダ名: {folder_name}")
+    print("-" * 50 + "\n")
 
     try:
         if not os.path.exists(output_dir):
@@ -232,8 +229,7 @@ def main():
 
     if not final_files:
         print("\n処理するファイルがありませんでした。")
-        if getattr(sys, 'frozen', False) or sys.stdin.isatty():
-            input("\n処理が完了しました。Enterキーを押して終了してください。")
+        wait_and_exit(root)
         return
 
     # ファイルをタイプ別にグループ化
@@ -254,7 +250,7 @@ def main():
     error_files = []
     lock = threading.Lock()
 
-    # Excel / Word / PowerPoint を並列で変換（各スレッドが独立して COM を初期化）
+    # Excel / Word / PowerPoint を並列で変換
     groups = [
         (ExcelConverter,      excel_files),
         (WordConverter,       word_files),
@@ -287,8 +283,20 @@ def main():
         for err in error_files:
             print(err)
 
-    if getattr(sys, 'frozen', False) or sys.stdin.isatty():
-        input("\n処理が完了しました。Enterキーを押して終了してください。")
+    # --- 作成したフォルダをオープン ---
+    print("\n処理が完了しました。作成されたフォルダを開きます。")
+    if os.path.exists(output_dir):
+        try:
+            if hasattr(os, 'startfile'):  # Windows
+                os.startfile(output_dir)
+            elif sys.platform == 'darwin':  # Mac (念のため)
+                import subprocess
+                subprocess.Popen(['open', output_dir])
+        except Exception as e:
+            print(f"フォルダを開けませんでした: {e}")
+
+    # 終了処理 (3秒待機してGUIもクリーンアップ)
+    wait_and_exit(root)
 
 
 if __name__ == "__main__":
