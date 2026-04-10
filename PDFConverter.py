@@ -150,7 +150,7 @@ def main():
 
     base_dir = os.path.dirname(files_to_process[0])
     date_str = datetime.now().strftime("%Y%m%d")
-    default_name = f"{date_str}_PDF"
+    default_name = f"{date_str}_PDFフォルダ"
 
     prompt_msg = "元のファイルと同じ場所に新たなフォルダを作ります。\nフォルダ名称を入力してください。"
     user_input = simpledialog.askstring(

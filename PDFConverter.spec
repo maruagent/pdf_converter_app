@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['main.py'],
+    ['PDFConverter.py'],
     pathex=[],
     binaries=[],
     datas=[],
